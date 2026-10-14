@@ -197,6 +197,9 @@ class Evaluator:
             for cls in range(0, class_number)
         }
 
+        self.fb_intersection = torch.zeros(2, device=device)
+        self.fb_union = torch.zeros(2, device=device)
+
         self.class_ASSD = {
             cls: {
                 "total_assd": 0.0,
@@ -207,11 +210,26 @@ class Evaluator:
 
         self.invalid_assd = 0
 
-    def accumulate(self, intersection, union, assd, episode_idx):
+    def accumulate(self, intersection, union, mask, prediction, assd, episode_idx):
         class_idx = episode_idx % len(self.class_IoU)
 
         self.class_IoU[class_idx]["total_intersection"] += intersection
         self.class_IoU[class_idx]["total_union"] += union
+
+        self.fb_intersection[1] += intersection
+        self.fb_union[1] += union
+
+        mask = mask.bool()
+        prediction = prediction.bool()
+
+        bg_mask = ~mask
+        bg_prediction = ~prediction
+
+        bg_intersection = ((bg_mask * bg_prediction) == 1).sum()
+        bg_union = ((bg_mask + bg_prediction) > 0).sum()
+
+        self.fb_intersection[0] += bg_intersection
+        self.fb_union[0] += bg_union
 
         if np.isnan(assd):
             self.invalid_assd += 1
@@ -233,6 +251,21 @@ class Evaluator:
         mIoU = torch.stack(ious).mean()
 
         return mIoU.item() * 100
+
+    def evaluate_FB_IoU(self):
+        """Evaluate foreground-background IoU."""
+
+        fb_ious = self.fb_intersection / self.fb_union
+
+        bg_iou = fb_ious[0]
+        fg_iou = fb_ious[1]
+
+        fb_iou = fb_ious.mean()
+
+        print(f"Background IoU: {bg_iou.item() * 100:.2f}")
+        print(f"Foreground IoU: {fg_iou.item() * 100:.2f}")
+
+        return fb_iou.item() * 100
 
     def evaluate_ASSD(self):
         """Evaluate mASSD between clases"""
@@ -290,7 +323,7 @@ def run_test(dataset, num_episodes, n_shot):
 
         assd = ASSD(query[-1], prediction)
 
-        evaluator.accumulate(intersection, union, assd, i)
+        evaluator.accumulate(intersection, union, query[-1], prediction, assd, i)
 
         print(f"IoU: {IoU(query[-1], prediction) * 100}")
         print(f"ASSD: {assd}")
@@ -299,6 +332,7 @@ def run_test(dataset, num_episodes, n_shot):
     print("Testing finished!")
 
     print(f"mIoU: {evaluator.evaluate_mIoU()}")
+    print(f"FB-IoU: {evaluator.evaluate_FB_IoU()}")
     print(f"ASSD: {evaluator.evaluate_ASSD()}")
     print(f"Undefined ASSD episodes: {evaluator.invalid_assd}")
 
